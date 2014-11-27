@@ -303,7 +303,9 @@ static NSString *kiTunesMetadataFileName        = @"iTunesMetadata";
     }
     
     if (appPath) {
-        NSMutableArray *arguments = [NSMutableArray arrayWithObjects:@"-fs", [certComboBox objectValue], nil];
+        NSMutableArray *arguments = [NSMutableArray arrayWithObjects:@"-fs",
+                                     [NSString stringWithFormat:@"'%@'",[certComboBox objectValue]],
+                                     nil];
 		
 	NSDictionary *systemVersionDictionary = [NSDictionary dictionaryWithContentsOfFile:@"/System/Library/CoreServices/SystemVersion.plist"];
 	float systemVersionFloat = [[systemVersionDictionary objectForKey:@"ProductVersion"] floatValue];
@@ -338,22 +340,63 @@ static NSString *kiTunesMetadataFileName        = @"iTunesMetadata";
         
         [arguments addObjectsFromArray:[NSArray arrayWithObjects:appPath, nil]];
         
+        NSPipe *pipe=[NSPipe pipe];
+        NSFileHandle *handle=[pipe fileHandleForReading];
+        [NSThread detachNewThreadSelector:@selector(watchCodesigning:)
+                                 toTarget:self withObject:handle];
+        
+        NSTask *dylibTask = [[NSTask alloc] init];
+        [dylibTask setCurrentDirectoryPath:appPath];
+        [dylibTask setLaunchPath:@"/bin/sh"];
+        NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:appPath error:nil];
+        NSEnumerator *enumerator = [files objectEnumerator];
+        NSString *anObject;
+        NSString *path = @"";
+        BOOL findDylib = false;
+        BOOL findFrameworks = false;
+        while (anObject = [enumerator nextObject]) {
+            /* code to act on each element as it is returned */
+            if ([anObject hasSuffix:@"dylib"] && findDylib==false) {
+                findDylib = true;
+                path = [path stringByAppendingString:@" *.dylib"];
+            }
+            if ([anObject containsString:@"Frameworks"] && findFrameworks==false) {
+                findFrameworks = true;
+                NSArray *frameworkFiles = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:[NSString stringWithFormat:@"%@/%@",appPath,anObject] error:nil];
+                NSEnumerator *frameworkEnum = [frameworkFiles objectEnumerator];
+                NSString *frameworkFile = @"";
+                while (frameworkFile = [frameworkEnum nextObject]) {
+                    path = [path stringByAppendingFormat:@" Frameworks/%@",frameworkFile];
+                }
+            }
+        }
+        path = [path stringByAppendingString:@" ."];
+//        NSString *path = @"*.dylib .";
+        [dylibTask setArguments:@[@"-c",
+                                  [NSString stringWithFormat:@"codesign -fs '%@'%@",[certComboBox objectValue],
+                                   path
+                                   ]]];
+        [codesignTask setStandardOutput:pipe];
+        [codesignTask setStandardError:pipe];
+        [dylibTask launch];
+        NSLog(@"pid %d",[dylibTask processIdentifier]);
+        
         codesignTask = [[NSTask alloc] init];
         [codesignTask setLaunchPath:@"/usr/bin/codesign"];
         [codesignTask setArguments:arguments];
 		
-        [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(checkCodesigning:) userInfo:nil repeats:TRUE];
+        [NSTimer scheduledTimerWithTimeInterval:5.0 target:self selector:@selector(checkCodesigning:) userInfo:nil repeats:TRUE];
         
         
-        NSPipe *pipe=[NSPipe pipe];
-        [codesignTask setStandardOutput:pipe];
-        [codesignTask setStandardError:pipe];
-        NSFileHandle *handle=[pipe fileHandleForReading];
+//        NSPipe *pipe=[NSPipe pipe];
+//        [codesignTask setStandardOutput:pipe];
+//        [codesignTask setStandardError:pipe];
+//        NSFileHandle *handle=[pipe fileHandleForReading];
         
-        [codesignTask launch];
+//        [codesignTask launch];
         
-        [NSThread detachNewThreadSelector:@selector(watchCodesigning:)
-                                 toTarget:self withObject:handle];
+//        [NSThread detachNewThreadSelector:@selector(watchCodesigning:)
+//                                 toTarget:self withObject:handle];
     }
 }
 
@@ -361,7 +404,7 @@ static NSString *kiTunesMetadataFileName        = @"iTunesMetadata";
     @autoreleasepool {
         
         codesigningResult = [[NSString alloc] initWithData:[streamHandle readDataToEndOfFile] encoding:NSASCIIStringEncoding];
-        
+        NSLog(@"%@",codesigningResult);
     }
 }
 
@@ -379,7 +422,7 @@ static NSString *kiTunesMetadataFileName        = @"iTunesMetadata";
     if (appPath) {
         verifyTask = [[NSTask alloc] init];
         [verifyTask setLaunchPath:@"/usr/bin/codesign"];
-        [verifyTask setArguments:[NSArray arrayWithObjects:@"-v", appPath, nil]];
+        [verifyTask setArguments:[NSArray arrayWithObjects:@"-v", @"--no-strict", appPath, nil]];
 		
         [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(checkVerificationProcess:) userInfo:nil repeats:TRUE];
         
